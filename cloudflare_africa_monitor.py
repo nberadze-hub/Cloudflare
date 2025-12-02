@@ -39,42 +39,65 @@ def send_slack_alert(region_name, status_friendly, status_raw, is_resolved=False
     if not SLACK_WEBHOOK_URL:
         return
 
+    # 1. Determine Visuals (Emoji & Header)
     if is_resolved:
-        color = "#36a64f" # Green
         emoji = "✅"
-        title = "Cloudflare Issue Resolved"
-        status_msg = "Back Operational"
+        header_text = "Issue Resolved"
+        status_text = f"*Status:* {emoji} Back Operational"
     else:
-        # Yellow for maintenance, Red for outages
-        color = "#FFD700" if status_raw == "under_maintenance" else "#FF0000"
-        emoji = "⚠️" if status_raw == "under_maintenance" else "🔴"
-        title = "Cloudflare Status Alert"
-        status_msg = f"{status_friendly}\n_({status_raw})_"
+        # Maintenance = Yellow, Outage = Red
+        if status_raw == "under_maintenance":
+            emoji = "⚠️"
+            header_text = "Maintenance Alert"
+        else:
+            emoji = "🔴"
+            header_text = "Outage Alert"
+        
+        status_text = f"*Status:* {emoji} {status_friendly}\n_Code: {status_raw}_"
+
+    # 2. Build "Block Kit" Payload (The Modern Design)
+    blocks = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": f"{emoji} Cloudflare: {header_text}",
+                "emoji": True
+            }
+        },
+        {
+            "type": "divider"
+        },
+        {
+            "type": "section",
+            "fields": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Region:*\n🌍 {region_name}"
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": status_text
+                }
+            ]
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"🕒 Detected at {datetime.now().strftime('%H:%M UTC')} | <https://www.cloudflarestatus.com/|View Status Page>"
+                }
+            ]
+        }
+    ]
+
+    # The 'text' field is what shows up in the notification popup on your phone/desktop
+    notification_text = f"{emoji} {header_text}: {region_name}"
 
     payload = {
-        "text": f"{emoji} {title}: {region_name}",
-        "attachments": [
-            {
-                "color": color,
-                "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": f"{emoji} {title}", "emoji": True}
-                    },
-                    {
-                        "type": "section",
-                        "fields": [
-                            {"type": "mrkdwn", "text": f"*Region:*\n{region_name}"},
-                            {"type": "mrkdwn", "text": f"*Status:*\n{status_msg}"}
-                        ]
-                    },
-                    {
-                        "type": "context",
-                        "elements": [{"type": "mrkdwn", "text": f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}"}]
-                    }
-                ]
-            }
-        ]
+        "text": notification_text,
+        "blocks": blocks
     }
 
     try:
@@ -86,7 +109,6 @@ def send_slack_alert(region_name, status_friendly, status_raw, is_resolved=False
 def main():
     print(f"Starting Monitor at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}...")
     
-    # 1. Load memory from last run
     previous_state = load_previous_state()
     current_state = {}
     
@@ -110,39 +132,24 @@ def main():
         for region in africa_regions:
             name = region["name"]
             raw_status = region["status"]
-            
-            # Save this status to the "Current" memory for next time
             current_state[name] = raw_status 
             
-            # Retrieve what this region was doing 5 minutes ago
-            # If we don't have a record (first run), assume it was "operational" so we alert if it's broken now
             last_status = previous_state.get(name, "operational")
-            
             friendly_status = STATUS_MAPPING.get(raw_status, raw_status)
 
-            # --- INTELLIGENT ALERT LOGIC ---
-            
-            # Only alert if the status has CHANGED
             if raw_status != last_status:
-                
-                # Scenario A: It just broke (or changed from Maint -> Outage)
                 if raw_status != "operational":
-                    print(f"🔴 CHANGE DETECTED: {name} is now {raw_status}")
+                    print(f"🔴 CHANGE: {name} is {raw_status}")
                     send_slack_alert(name, friendly_status, raw_status, is_resolved=False)
-                
-                # Scenario B: It just got fixed (Broken -> Operational)
                 elif raw_status == "operational" and last_status != "operational":
-                    print(f"✅ RESOLVED: {name} is back online")
+                    print(f"✅ RESOLVED: {name} is online")
                     send_slack_alert(name, friendly_status, raw_status, is_resolved=True)
-            
             else:
-                # No change? Do nothing (prevent spam)
                 if raw_status != "operational":
-                    print(f"⚠️  {name} | Still {raw_status} (No alert sent)")
+                    print(f"⚠️  {name} | Still {raw_status} (No alert)")
                 else:
                     print(f"✅ {name} | Operational")
 
-        # 2. Save memory for next run
         save_current_state(current_state)
         print("\nScan complete. State saved.")
 
