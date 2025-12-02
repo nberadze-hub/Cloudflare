@@ -17,6 +17,9 @@ STATUS_MAPPING = {
     "major_outage": "Major Outage"
 }
 
+# New: groups to monitor
+REGION_GROUPS = ["Africa", "Asia", "Europe", "Latin America & the Caribbean"]
+
 def load_previous_state():
     if os.path.exists(STATE_FILE):
         try:
@@ -138,18 +141,30 @@ def main():
         data = response.json()
         
         components = data.get("components", [])
-        africa_group = next((c for c in components if c["name"] == "Africa" and c.get("group") is True), None)
-        
-        if not africa_group:
-            print("❌ Error: Could not find 'Africa' group.")
-            return
 
-        africa_group_id = africa_group["id"]
-        africa_regions = [c for c in components if c.get("group_id") == africa_group_id]
+        # New: collect regions from multiple groups
+        monitored_regions = []
+        for group_name in REGION_GROUPS:
+            group = next(
+                (c for c in components if c["name"] == group_name and c.get("group") is True),
+                None
+            )
+            
+            if not group:
+                print(f"❌ Error: Could not find '{group_name}' group.")
+                continue
+
+            group_id = group["id"]
+            group_regions = [c for c in components if c.get("group_id") == group_id]
+            print(f"Scanning {len(group_regions)} regions in {group_name}...")
+            monitored_regions.extend(group_regions)
         
-        print(f"Scanning {len(africa_regions)} regions...")
+        # If nothing found at all, bail out like before
+        if not monitored_regions:
+            print("❌ Error: Could not find any configured region groups.")
+            return
         
-        for region in africa_regions:
+        for region in monitored_regions:
             name = region["name"]
             raw_status = region["status"]
             current_state[name] = raw_status 
