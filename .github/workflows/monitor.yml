@@ -1,0 +1,48 @@
+name: Cloudflare Africa Monitor
+
+on:
+  # Run every 5 minutes
+  schedule:
+    - cron: '*/5 * * * *'
+  
+  # Allow manual runs
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Download previous state
+        uses: actions/cache@v4
+        with:
+          path: /tmp/cloudflare_state.json
+          key: cloudflare-state-${{ github.run_id }}
+          restore-keys: |
+            cloudflare-state-
+      
+      - name: Run monitoring script
+        env:
+          INCIDENT_IO_WEBHOOK: ${{ secrets.INCIDENT_IO_WEBHOOK }}
+          INCIDENT_IO_SECRET: ${{ secrets.INCIDENT_IO_SECRET }}
+        run: python cloudflare_africa_monitor.py
+      
+      - name: Save state for next run
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: /tmp/cloudflare_state.json
+          key: cloudflare-state-${{ github.run_id }}
