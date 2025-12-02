@@ -1,6 +1,7 @@
 import requests
 import os
 import json
+import sys
 from datetime import datetime
 
 # --- Configuration ---
@@ -9,7 +10,6 @@ INCIDENT_IO_WEBHOOK = os.environ.get("INCIDENT_IO_WEBHOOK")
 INCIDENT_IO_SECRET = os.environ.get("INCIDENT_IO_SECRET")
 
 # This maps the "Tech Speak" (API) to "Human Speak" (Website)
-# We use this for the primary display, but we keep the raw code for safety.
 STATUS_MAPPING = {
     "operational": "Operational",
     "partial_outage": "Re-routed",
@@ -19,10 +19,13 @@ STATUS_MAPPING = {
 }
 
 def get_status_emoji(status):
+    # Operational = Green Check
     if status == "operational":
         return "✅"
+    # Maintenance = Yellow Warning
     elif status == "under_maintenance":
         return "⚠️"
+    # Outages/Degraded/Major = Red Circle
     else:
         return "🔴"
 
