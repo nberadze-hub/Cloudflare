@@ -18,7 +18,6 @@ STATUS_MAPPING = {
 }
 
 def load_previous_state():
-    """Loads the state from the last run (if it exists)."""
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, 'r') as f:
@@ -28,81 +27,97 @@ def load_previous_state():
     return {}
 
 def save_current_state(state):
-    """Saves the current state for the next run."""
     try:
         with open(STATE_FILE, 'w') as f:
             json.dump(state, f)
     except Exception as e:
         print(f"⚠️ Warning: Could not save state file: {e}")
 
-def send_slack_alert(region_name, status_friendly, status_raw, is_resolved=False):
+def send_grouped_slack_alert(outages, maintenance, resolved):
+    """
+    Sends ONE consolidated message with all updates grouped together.
+    """
     if not SLACK_WEBHOOK_URL:
         return
 
-    # 1. Determine Visuals (Emoji & Header)
-    if is_resolved:
-        emoji = "✅"
-        header_text = "Issue Resolved"
-        status_text = f"*Status:* {emoji} Back Operational"
-    else:
-        # Maintenance = Yellow, Outage = Red
-        if status_raw == "under_maintenance":
-            emoji = "⚠️"
-            header_text = "Maintenance Alert"
-        else:
-            emoji = "🔴"
-            header_text = "Outage Alert"
-        
-        status_text = f"*Status:* {emoji} {status_friendly}\n_Code: {status_raw}_"
-
-    # 2. Build "Block Kit" Payload (The Modern Design)
-    blocks = [
-        {
-            "type": "header",
-            "text": {
-                "type": "plain_text",
-                "text": f"{emoji} Cloudflare: {header_text}",
-                "emoji": True
-            }
-        },
-        {
-            "type": "divider"
-        },
-        {
-            "type": "section",
-            "fields": [
-                {
-                    "type": "mrkdwn",
-                    "text": f"*Region:*\n🌍 {region_name}"
-                },
-                {
-                    "type": "mrkdwn",
-                    "text": status_text
-                }
-            ]
-        },
-        {
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": f"🕒 Detected at {datetime.now().strftime('%H:%M UTC')} | <https://www.cloudflarestatus.com/|View Status Page>"
-                }
-            ]
+    blocks = []
+    
+    # Header
+    blocks.append({
+        "type": "header",
+        "text": {
+            "type": "plain_text",
+            "text": "🌍 Cloudflare Africa Status Update",
+            "emoji": True
         }
-    ]
+    })
+    blocks.append({"type": "divider"})
 
-    # The 'text' field is what shows up in the notification popup on your phone/desktop
-    notification_text = f"{emoji} {header_text}: {region_name}"
+    # Group 1: Outages (Red)
+    if outages:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*🔴 Outages (Re-routed)*"}
+        })
+        text_body = ""
+        for item in outages:
+            text_body += f"• {item['region']} _(Code: {item['code']})_\n"
+        
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": text_body}
+        })
 
+    # Group 2: Maintenance (Yellow)
+    if maintenance:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*⚠️ Maintenance (Partially Re-routed)*"}
+        })
+        text_body = ""
+        for item in maintenance:
+            text_body += f"• {item['region']} _(Code: {item['code']})_\n"
+            
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": text_body}
+        })
+
+    # Group 3: Resolved (Green)
+    if resolved:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*✅ Resolved (Back Online)*"}
+        })
+        text_body = ""
+        for item in resolved:
+            text_body += f"• {item['region']}\n"
+            
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": text_body}
+        })
+
+    # Footer
+    blocks.append({
+        "type": "context",
+        "elements": [
+            {
+                "type": "mrkdwn",
+                "text": f"🕒 {datetime.now().strftime('%H:%M UTC')} | <https://www.cloudflarestatus.com/|Status Page>"
+            }
+        ]
+    })
+
+    # Payload
     payload = {
-        "text": notification_text,
+        "text": "Cloudflare Africa Status Update",
         "blocks": blocks
     }
 
     try:
         requests.post(SLACK_WEBHOOK_URL, json=payload)
-        print(f"   -> Slack alert sent for {region_name}")
+        print("   -> Grouped Slack alert sent.")
     except Exception as e:
         print(f"   -> Error sending Slack: {e}")
 
@@ -111,6 +126,11 @@ def main():
     
     previous_state = load_previous_state()
     current_state = {}
+    
+    # Lists to collect issues
+    new_outages = []
+    new_maintenance = []
+    new_resolved = []
     
     try:
         response = requests.get(CLOUDFLARE_API_URL)
@@ -135,20 +155,34 @@ def main():
             current_state[name] = raw_status 
             
             last_status = previous_state.get(name, "operational")
-            friendly_status = STATUS_MAPPING.get(raw_status, raw_status)
-
+            
+            # --- LOGIC: Collect changes into lists instead of sending immediately ---
             if raw_status != last_status:
+                
+                # Case 1: Something is wrong
                 if raw_status != "operational":
                     print(f"🔴 CHANGE: {name} is {raw_status}")
-                    send_slack_alert(name, friendly_status, raw_status, is_resolved=False)
+                    item = {"region": name, "code": raw_status}
+                    
+                    if raw_status == "under_maintenance":
+                        new_maintenance.append(item)
+                    else:
+                        new_outages.append(item)
+                
+                # Case 2: Something got fixed
                 elif raw_status == "operational" and last_status != "operational":
-                    print(f"✅ RESOLVED: {name} is online")
-                    send_slack_alert(name, friendly_status, raw_status, is_resolved=True)
+                    print(f"✅ RESOLVED: {name}")
+                    new_resolved.append({"region": name})
+            
             else:
                 if raw_status != "operational":
                     print(f"⚠️  {name} | Still {raw_status} (No alert)")
-                else:
-                    print(f"✅ {name} | Operational")
+
+        # --- FINAL STEP: Send ONE message if anything happened ---
+        if new_outages or new_maintenance or new_resolved:
+            send_grouped_slack_alert(new_outages, new_maintenance, new_resolved)
+        else:
+            print("No status changes detected.")
 
         save_current_state(current_state)
         print("\nScan complete. State saved.")
