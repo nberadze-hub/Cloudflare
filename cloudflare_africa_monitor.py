@@ -17,35 +17,6 @@ INCIDENT_IO_WEBHOOK = os.environ.get("INCIDENT_IO_WEBHOOK", "")
 INCIDENT_IO_SECRET = os.environ.get("INCIDENT_IO_SECRET", "")
 STATE_FILE = "/tmp/cloudflare_state.json"
 
-# African regions to monitor (Cloudflare component names contain these)
-AFRICAN_REGIONS = [
-    "Accra, Ghana",
-    "Algiers, Algeria",
-    "Annaba, Algeria",
-    "Antananarivo, Madagascar",
-    "Bujumbura, Burundi",
-    "Cairo, Egypt",
-    "Cape Town, South Africa",
-    "Casablanca, Morocco",
-    "Dakar, Senegal",
-    "Dar Es Salaam, Tanzania",
-    "Djibouti City, Djibouti",
-    "Durban, South Africa",
-    "Gaborone, Botswana",
-    "Harare, Zimbabwe",
-    "Johannesburg, South Africa",
-    "Kigali, Rwanda",
-    "Lagos, Nigeria",
-    "Luanda, Angola",
-    "Lusaka, Zambia",
-    "Maputo, Mozambique",
-    "Mombasa, Kenya",
-    "Nairobi, Kenya",
-    "Oran, Algeria",
-    "Port Louis, Mauritius",
-    "Tunis, Tunisia",
-]
-
 
 def get_cloudflare_status() -> List[Dict]:
     """Fetch current status from Cloudflare API"""
@@ -60,15 +31,42 @@ def get_cloudflare_status() -> List[Dict]:
 
 
 def filter_african_regions(components: List[Dict]) -> List[Dict]:
-    """Filter components to only African regions"""
+    """Filter components to only African regions using group structure"""
     african_components = []
     
+    # First, find the Africa group ID
+    africa_group_id = None
     for component in components:
         name = component.get("name", "")
-        for region in AFRICAN_REGIONS:
-            if region.lower() in name.lower():
-                african_components.append(component)
-                break
+        # Look for the Africa group (it's a parent component)
+        if name == "Africa":
+            africa_group_id = component.get("id")
+            print(f"🌍 Found Africa group: {name} (ID: {africa_group_id})")
+            break
+    
+    if not africa_group_id:
+        print("WARNING: Could not find Africa group, trying name-based matching...")
+        # Fallback to name-based matching if group not found
+        african_keywords = [
+            "Ghana", "Algeria", "Madagascar", "South Africa", "Senegal", 
+            "Tanzania", "Djibouti", "Botswana", "Zimbabwe", "Rwanda",
+            "Nigeria", "Angola", "Mozambique", "Kenya", "Tunisia",
+            "Egypt", "Zambia", "Morocco", "Mauritius", "Congo",
+            "Namibia", "Ivory Coast", "Uganda", "Ethiopia", "Malawi",
+            "Burkina Faso", "Réunion", "Reunion", "Abidjan"
+        ]
+        for component in components:
+            name = component.get("name", "")
+            for keyword in african_keywords:
+                if keyword.lower() in name.lower():
+                    african_components.append(component)
+                    break
+        return african_components
+    
+    # Get all components that belong to the Africa group
+    for component in components:
+        if component.get("group_id") == africa_group_id:
+            african_components.append(component)
     
     return african_components
 
@@ -214,7 +212,7 @@ def main():
     print("-" * 60)
     
     alerts_sent = 0
-    for component in african_components:
+    for component in sorted(african_components, key=lambda x: x.get("name", "")):
         component_id = component.get("id", "")
         component_name = component.get("name", "Unknown")
         current_status = component.get("status", "unknown")
@@ -233,7 +231,7 @@ def main():
             # First run, just log
             pass
         elif previous_status != current_status:
-            print(f"   ⚠️  STATUS CHANGE: {previous_status} → {current_status}")
+            print(f"   🔔 STATUS CHANGE: {previous_status} → {current_status}")
             
             # Send alert to incident.io
             send_incident_io_alert(component, previous_status)
