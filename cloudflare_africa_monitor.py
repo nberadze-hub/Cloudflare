@@ -1,15 +1,13 @@
 import requests
 import os
-import json
 import sys
+import json
 from datetime import datetime
 
 # --- Configuration ---
 CLOUDFLARE_API_URL = "https://www.cloudflarestatus.com/api/v2/components.json"
-INCIDENT_IO_WEBHOOK = os.environ.get("INCIDENT_IO_WEBHOOK")
-INCIDENT_IO_SECRET = os.environ.get("INCIDENT_IO_SECRET")
+SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")
 
-# This maps the "Tech Speak" (API) to "Human Speak" (Website)
 STATUS_MAPPING = {
     "operational": "Operational",
     "partial_outage": "Re-routed",
@@ -18,105 +16,108 @@ STATUS_MAPPING = {
     "major_outage": "Major Outage"
 }
 
-def get_status_emoji(status):
-    # Operational = Green Check
-    if status == "operational":
-        return "✅"
-    # Maintenance = Yellow Warning
-    elif status == "under_maintenance":
-        return "⚠️"
-    # Outages/Degraded/Major = Red Circle
-    else:
-        return "🔴"
-
-def send_incident_io_alert(region_name, status_display, raw_status):
+def send_slack_alert(region_name, status_friendly, status_raw):
     """
-    Sends an alert to incident.io if a webhook is configured.
+    Sends a formatted alert to Slack.
     """
-    if not INCIDENT_IO_WEBHOOK:
+    if not SLACK_WEBHOOK_URL:
+        print("   -> No Slack URL found. Skipping alert.")
         return
 
+    # Color Logic: Yellow for maintenance, Red for everything else
+    color = "#FFD700" if status_raw == "under_maintenance" else "#FF0000"
+    emoji = "⚠️" if status_raw == "under_maintenance" else "🔴"
+
     payload = {
-        "title": f"Cloudflare Status Change: {region_name}",
-        "description": f"Region: {region_name}\nCurrent Status: {status_display}\nTechnical Code: {raw_status}",
-        "status": "firing",
-        "deduplication_key": f"cloudflare-{region_name}",
-        "metadata": {
-            "source": "Cloudflare Monitor",
-            "region": region_name,
-            "raw_status": raw_status
-        }
+        "text": f"{emoji} Issue detected in {region_name}",
+        "attachments": [
+            {
+                "color": color,
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {
+                            "type": "plain_text",
+                            "text": f"{emoji} Cloudflare Status Alert",
+                            "emoji": True
+                        }
+                    },
+                    {
+                        "type": "section",
+                        "fields": [
+                            {
+                                "type": "mrkdwn",
+                                "text": f"*Region:*\n{region_name}"
+                            },
+                            {
+                                "type": "mrkdwn",
+                                "text": f"*Status:*\n{status_friendly}\n_({status_raw})_"
+                            }
+                        ]
+                    },
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
     }
 
-    headers = {"Content-Type": "application/json"}
-    if INCIDENT_IO_SECRET:
-        headers["Authorization"] = f"Bearer {INCIDENT_IO_SECRET}"
-
     try:
-        response = requests.post(INCIDENT_IO_WEBHOOK, json=payload, headers=headers)
-        if response.status_code in [200, 201, 202]:
-            print(f"   -> Alert sent to incident.io for {region_name}")
+        response = requests.post(SLACK_WEBHOOK_URL, json=payload)
+        if response.status_code == 200:
+            print(f"   -> Slack alert sent for {region_name}")
         else:
-            print(f"   -> Failed to send alert: {response.status_code} - {response.text}")
+            print(f"   -> Failed to send Slack alert: {response.status_code} - {response.text}")
     except Exception as e:
-        print(f"   -> Error sending alert: {str(e)}")
+        print(f"   -> Error sending Slack alert: {e}")
 
 def main():
-    print(f"Starting Cloudflare Africa Monitor at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}...")
+    print(f"Starting Monitor at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}...")
     
     try:
-        # 1. Fetch all Cloudflare components
+        # 1. Fetch Cloudflare Data
         response = requests.get(CLOUDFLARE_API_URL)
         response.raise_for_status()
         data = response.json()
         
-        # 2. Find the 'Africa' group ID
+        # 2. Find Africa Group
         components = data.get("components", [])
         africa_group = next((c for c in components if c["name"] == "Africa" and c.get("group") is True), None)
         
         if not africa_group:
-            print("❌ Error: Could not find 'Africa' group in Cloudflare API.")
+            print("❌ Error: Could not find 'Africa' group.")
             return
 
         africa_group_id = africa_group["id"]
-        print(f"Found Africa Group ID: {africa_group_id}")
-
-        # 3. Filter for components that belong to Africa
         africa_regions = [c for c in components if c.get("group_id") == africa_group_id]
         
-        print(f"Monitoring {len(africa_regions)} African regions...\n")
-        print("-" * 60)
-        print(f"{'REGION':<40} | {'STATUS'}")
-        print("-" * 60)
-
+        print(f"Scanning {len(africa_regions)} regions...")
         issues_found = 0
-
-        # 4. Check status for each region
+        
+        # 3. Check Each Region
         for region in africa_regions:
             name = region["name"]
             raw_status = region["status"]
             
-            # Get the "Website Friendly" name
-            friendly_status = STATUS_MAPPING.get(raw_status, raw_status.replace("_", " ").title())
-            emoji = get_status_emoji(raw_status)
-
-            # --- THE HYBRID LOGIC ---
-            # If it is NOT operational, we show: "Friendly Name (raw_code)"
+            # Only alert if NOT operational
             if raw_status != "operational":
-                display_status = f"{friendly_status} ({raw_status})"
                 issues_found += 1
+                friendly_status = STATUS_MAPPING.get(raw_status, raw_status)
                 
-                # Print to logs with a warning color/format
-                print(f"{emoji} {name:<38} | {display_status}")
-                
-                # Trigger Alert
-                send_incident_io_alert(name, display_status, raw_status)
+                print(f"🔴 {name} | {friendly_status} ({raw_status})")
+                send_slack_alert(name, friendly_status, raw_status)
             else:
-                # If operational, just show "Operational" (clean)
-                print(f"{emoji} {name:<38} | {friendly_status}")
+                # Optional: Print healthy regions to log just to show it's working
+                print(f"✅ {name} | Operational")
 
-        print("-" * 60)
-        print(f"\nScan complete. {issues_found} issues found.")
+        print(f"\nScan complete. {issues_found} issues detected.")
 
     except Exception as e:
         print(f"❌ Critical Error: {str(e)}")
