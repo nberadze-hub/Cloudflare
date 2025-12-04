@@ -20,11 +20,11 @@ STATUS_MAPPING = {
 # Groups to monitor
 REGION_GROUPS = ["Africa", "Asia", "Europe", "Latin America & the Caribbean"]
 
-# Fixed-time summary schedule
-# 08:00 / 20:00 GMT+4 == 04:00 / 16:00 UTC
+# Fixed-time summary schedule (UPDATED)
+# 08:30 / 20:30 GMT+4 == 04:30 / 16:30 UTC
 SUMMARY_TIMES_UTC = [
-    (4, 0),   # 08:00 GMT+4
-    (16, 0),  # 20:00 GMT+4
+    (4, 30),    # 08:30 GMT+4
+    (16, 30),   # 20:30 GMT+4
 ]
 
 
@@ -49,8 +49,8 @@ def save_current_state(state):
 def send_grouped_slack_alert(outages, maintenance, resolved):
     """
     Sends ONE consolidated message with all updates grouped together,
-    divided per region (Africa, Asia, Europe, South America), using
-    the same Outages / Maintenance / Resolved format for each.
+    divided per region (Africa, Asia, Europe, Latin America & the Caribbean),
+    using the Outages / Maintenance / Resolved format.
     """
     if not SLACK_WEBHOOK_URL:
         return
@@ -60,7 +60,7 @@ def send_grouped_slack_alert(outages, maintenance, resolved):
     # Header
     blocks.append({
         "type": "header",
-        "text": {
+            "text": {
             "type": "plain_text",
             "text": "🌍 Cloudflare Status Update",
             "emoji": True
@@ -168,7 +168,7 @@ def send_grouped_slack_alert(outages, maintenance, resolved):
 
 def send_fixed_time_summary(monitored_regions, region_group_map, label):
     """
-    At 08:00 / 20:00 GMT+4 we call this to send a summary of
+    At 08:30 / 20:30 GMT+4 we call this to send a summary of
     CURRENT non-operational regions (reroutes, outages, maintenance).
     This uses ONLY live data (monitored_regions), not previous_state.
     """
@@ -371,15 +371,15 @@ def main():
         else:
             print("No status changes detected.")
 
-        # --- Fixed-time reroute summaries (08:00 & 20:00 GMT+4) ---
+        # --- Fixed-time reroute summaries (08:30 & 20:30 GMT+4) ---
         now_utc = datetime.now(timezone.utc)
         current_hm = (now_utc.hour, now_utc.minute)
 
         if current_hm in SUMMARY_TIMES_UTC:
-            if current_hm == (4, 0):
-                label = "08:00 GMT+4"
+            if current_hm == (4, 30):
+                label = "08:30 GMT+4"
             else:
-                label = "20:00 GMT+4"
+                label = "20:30 GMT+4"
             print(f"Sending fixed-time reroute summary for {label}...")
             send_fixed_time_summary(monitored_regions, region_group_map, label)
         else:
