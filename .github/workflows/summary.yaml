@@ -1,4 +1,4 @@
-name: Cloudflare Reroute Snapshot
+name: Cloudflare Summary
 
 on:
   schedule:
