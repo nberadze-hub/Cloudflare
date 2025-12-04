@@ -11,7 +11,7 @@ jobs:
   reroute-snapshot:
     runs-on: ubuntu-latest
     env:
-      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
     steps:
       - name: Checkout repo
@@ -25,5 +25,5 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      - name: Run Cloudflare reroute snapshot
-        run: python cloudflare_reroute_snapshot.py
+      - name: Run Cloudflare
+        run: python cloudflare_summary.py
