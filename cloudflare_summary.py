@@ -103,3 +103,97 @@ def build_slack_blocks(issues_by_group):
                 "type": "mrkdwn",
                 "text": "✅ No *Re-routed* or *Partially Re-routed* regions right now.\nAll monitored regions are operational."
             }
+        })
+    else:
+        for group in REGION_GROUPS:
+            partials = issues_by_group[group]["under_maintenance"]
+            reroutes = issues_by_group[group]["partial_outage"]
+
+            if not partials and not reroutes:
+                continue
+
+            # Group heading
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*🌍 {group}*"
+                }
+            })
+
+            # Re-routed (partial_outage)
+            if reroutes:
+                text_body = ""
+                for name in sorted(reroutes):
+                    text_body += f"• 🔴 {name} – Re-routed (`partial_outage`)\n"
+                blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "*🔴 Re-routed regions:*\n" + text_body
+                    }
+                })
+
+            # Partially Re-routed (under_maintenance)
+            if partials:
+                text_body = ""
+                for name in sorted(partials):
+                    text_body += f"• ⚠️ {name} – Partially Re-routed (`under_maintenance`)\n"
+                blocks.append({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "*⚠️ Partially Re-routed regions:*\n" + text_body
+                    }
+                })
+
+            blocks.append({"type": "divider"})
+
+    # Footer
+    now_utc = datetime.now(timezone.utc)
+    blocks.append({
+        "type": "context",
+        "elements": [
+            {
+                "type": "mrkdwn",
+                "text": f"🕒 Snapshot at {now_utc.strftime('%Y-%m-%d %H:%M UTC')} | <https://www.cloudflarestatus.com/|Status Page>"
+            }
+        ]
+    })
+
+    return blocks
+
+
+def send_slack_snapshot(blocks):
+    if not SLACK_WEBHOOK_URL:
+        print("❌ SLACK_WEBHOOK_URL is not set. Exiting.")
+        return
+
+    payload = {
+        "text": "Cloudflare Reroute Snapshot",
+        "blocks": blocks,
+    }
+
+    resp = requests.post(SLACK_WEBHOOK_URL, json=payload, timeout=10)
+    if resp.status_code >= 400:
+        print(f"❌ Error sending Slack message: {resp.status_code} {resp.text}")
+    else:
+        print("✅ Reroute snapshot sent to Slack.")
+
+
+def main():
+    print(f"[cloudflare_reroute_snapshot] Starting at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
+
+    try:
+        components = fetch_components()
+        regions_by_group, issues_by_group = build_region_lists(components)
+        blocks = build_slack_blocks(issues_by_group)
+        send_slack_snapshot(blocks)
+        print("[cloudflare_reroute_snapshot] Done.")
+    except Exception as e:
+        print(f"❌ Critical error: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
