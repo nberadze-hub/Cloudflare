@@ -84,7 +84,7 @@ def build_slack_blocks(issues_by_group):
         "type": "header",
         "text": {
             "type": "plain_text",
-            "text": "🌍 Cloudflare Reroute Snapshot",
+            "text": "🌍 Cloudflare Summary",
             "emoji": True,
         },
     })
