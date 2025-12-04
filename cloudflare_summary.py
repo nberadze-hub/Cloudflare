@@ -170,7 +170,7 @@ def send_slack_snapshot(blocks):
         return
 
     payload = {
-        "text": "Cloudflare Reroute Snapshot",
+        "text": "Cloudflare Summary",
         "blocks": blocks,
     }
 
