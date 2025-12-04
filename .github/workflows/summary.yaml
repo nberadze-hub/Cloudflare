@@ -1,0 +1,29 @@
+name: Cloudflare Reroute Snapshot
+
+on:
+  schedule:
+    # Every 12 hours (00:00 and 12:00 UTC)
+    - cron: "0 */12 * * *"
+  workflow_dispatch:  # allow manual trigger
+    {}
+
+jobs:
+  reroute-snapshot:
+    runs-on: ubuntu-latest
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run Cloudflare reroute snapshot
+        run: python cloudflare_reroute_snapshot.py
