@@ -1,17 +1,13 @@
 name: Cloudflare Summary
 
 on:
-  schedule:
-    # Every 12 hours (00:00 and 12:00 UTC)
-    - cron: "0 */12 * * *"
-  workflow_dispatch:  # allow manual trigger
-    {}
+  workflow_dispatch: {}
 
 jobs:
   reroute-snapshot:
     runs-on: ubuntu-latest
     env:
-       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
     steps:
       - name: Checkout repo
