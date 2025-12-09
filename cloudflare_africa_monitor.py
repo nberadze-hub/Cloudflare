@@ -22,7 +22,6 @@ STATUS_MAPPING = {
 REGION_GROUPS = ["Africa", "Asia", "Europe", "Latin America & the Caribbean"]
 
 # Global service components to monitor (non-region issues)
-# You can tweak this list if Cloudflare renames or adds components.
 GLOBAL_COMPONENTS = [
     "Cloudflare Dashboard and APIs",
     "Cloudflare APIs",
@@ -58,8 +57,17 @@ def send_grouped_slack_alert(outages, maintenance, resolved):
     divided per region (Africa, Asia, Europe, Latin America & the Caribbean)
     plus a "Global Services" group for global issues.
     """
+
     if not SLACK_WEBHOOK_URL:
         return
+
+    # --- NEW: Detect serious global issues for <!channel> tagging ---
+    critical_global_issue = any(
+        item.get("group") == "Global Services"
+        and item.get("code") not in ("partial_outage", "under_maintenance")
+        for item in outages
+    )
+    # -----------------------------------------------------------------
 
     blocks = []
 
@@ -164,11 +172,13 @@ def send_grouped_slack_alert(outages, maintenance, resolved):
         ]
     })
 
-    # Payload
+    # --- NEW: Add <!channel> only for serious global issues ---
+    mention = "<!channel> " if critical_global_issue else ""
     payload = {
-        "text": "Cloudflare Status Update",
+        "text": f"{mention}Cloudflare Status Update",
         "blocks": blocks
     }
+    # --------------------------------------------------------------
 
     try:
         requests.post(SLACK_WEBHOOK_URL, json=payload)
