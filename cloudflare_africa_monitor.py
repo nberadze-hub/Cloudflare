@@ -1,12 +1,13 @@
-import requests
 import os
 import sys
 import json
+import requests
 from datetime import datetime, timezone
 
-# --- Configuration ---
-CLOUDFLARE_API_URL = "https://www.cloudflarestatus.com/api/v2/components.json"
+# ---------------- Configuration ----------------
+SUMMARY_URL = "https://www.cloudflarestatus.com/api/v2/summary.json"
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")
+
 STATE_FILE = "cloudflare_state.json"
 
 STATUS_MAPPING = {
@@ -17,22 +18,24 @@ STATUS_MAPPING = {
     "major_outage": "Major Outage",
 }
 
-# Only these Cloudflare *global* components are monitored
-GLOBAL_COMPONENTS = [
-    "Cloudflare Dashboard and APIs",
-    "Cloudflare APIs",
-    "Cloudflare Dashboard",
-    "DNS & Network services",
-    "DNS & Network Services",
-    "Cloudflare Network",
-    "CDN / Edge Network",
-]
+INCIDENT_STATUS_LABELS = {
+    "investigating": "Investigating",
+    "identified": "Identified",
+    "monitoring": "Monitoring",
+    "resolved": "Resolved",
+    "postmortem": "Postmortem",
+}
+
+# Optional: Only alert on incidents whose impact is not "none"
+# Cloudflare often uses: none, minor, major, critical
+ALERT_IMPACTS = {"minor", "major", "critical"}
 
 
+# ---------------- State helpers ----------------
 def load_previous_state():
     if os.path.exists(STATE_FILE):
         try:
-            with open(STATE_FILE, "r") as f:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             return {}
@@ -41,57 +44,60 @@ def load_previous_state():
 
 def save_current_state(state):
     try:
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f)
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"⚠️ Warning: Could not save state file: {e}")
 
 
-def send_global_slack_alert(new_issues, new_maintenance, resolved):
+# ---------------- Slack ----------------
+def send_slack_alert(page_indicator, new_or_changed, resolved):
     """
-    Send ONE message summarizing ONLY the global component CHANGES since last check.
-    Tag <!channel> ONLY if a *new* non-operational global issue appeared this check.
+    Send ONE Slack message summarizing CHANGES since last check.
+    Mentions <!channel> only when a NEW/CHANGED unresolved incident appears.
     """
-
     if not SLACK_WEBHOOK_URL:
+        print("⚠️ SLACK_WEBHOOK_URL not set; skipping Slack send.")
         return
 
-    # Tag only when NEW issues appear (not on resolve-only runs)
-    mention = "<!channel> " if (new_issues or new_maintenance) else ""
+    mention = "<!channel> " if new_or_changed else ""
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     blocks = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": "🌍 Cloudflare Global Status Update", "emoji": True},
+            "text": {"type": "plain_text", "text": "☁️ Cloudflare Status Update", "emoji": True},
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Page status indicator:* `{page_indicator}`",
+            },
         },
         {"type": "divider"},
     ]
 
-    if new_issues:
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "*🔴 New Global Issues*"}})
+    if new_or_changed:
+        blocks.append(
+            {"type": "section", "text": {"type": "mrkdwn", "text": "*🔴 New / Updated Incidents*"}}
+        )
         body = ""
-        for item in new_issues:
-            code = item["code"]
-            label = STATUS_MAPPING.get(code, code)
-            body += f"• {item['name']} _({label}, code: {code})_\n"
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": body}})
-        blocks.append({"type": "divider"})
-
-    if new_maintenance:
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "*⚠️ New Global Maintenance*"}})
-        body = ""
-        for item in new_maintenance:
-            code = item["code"]
-            label = STATUS_MAPPING.get(code, code)
-            body += f"• {item['name']} _({label}, code: {code})_\n"
+        for inc in new_or_changed:
+            status_label = INCIDENT_STATUS_LABELS.get(inc["status"], inc["status"])
+            impact = inc.get("impact", "unknown")
+            url = inc.get("shortlink") or inc.get("url") or "https://www.cloudflarestatus.com/"
+            body += f"• *{inc['name']}* — _{status_label}_ | impact: `{impact}`\n  {url}\n"
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": body}})
         blocks.append({"type": "divider"})
 
     if resolved:
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "*✅ Resolved*"}})
         body = ""
-        for item in resolved:
-            body += f"• {item['name']}\n"
+        for inc in resolved:
+            url = inc.get("shortlink") or inc.get("url") or "https://www.cloudflarestatus.com/"
+            body += f"• *{inc['name']}*\n  {url}\n"
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": body}})
         blocks.append({"type": "divider"})
 
@@ -101,76 +107,132 @@ def send_global_slack_alert(new_issues, new_maintenance, resolved):
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": f"🕒 {datetime.now(timezone.utc).strftime('%H:%M UTC')} | <https://www.cloudflarestatus.com/|Status Page>",
+                    "text": f"🕒 {now_utc} | <https://www.cloudflarestatus.com/|Status Page>",
                 }
             ],
         }
     )
 
-    payload = {"text": f"{mention}Cloudflare Global Status Update", "blocks": blocks}
+    payload = {"text": f"{mention}Cloudflare Status Update", "blocks": blocks}
 
     try:
-        requests.post(SLACK_WEBHOOK_URL, json=payload, timeout=10)
-        print("   -> Global Slack alert sent.")
+        resp = requests.post(SLACK_WEBHOOK_URL, json=payload, timeout=10)
+        resp.raise_for_status()
+        print("-> Slack alert sent.")
     except Exception as e:
-        print(f"   -> Error sending Slack: {e}")
+        print(f"-> Error sending Slack: {e}")
 
 
+# ---------------- Cloudflare fetch + diff ----------------
+def fetch_summary():
+    r = requests.get(SUMMARY_URL, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+
+def normalize_state(summary_json):
+    """
+    Build a state dict we can diff between runs.
+
+    We track:
+      - page indicator (none/minor/major/critical)
+      - incidents by ID (status, impact)
+    """
+    page_indicator = summary_json.get("status", {}).get("indicator", "unknown")
+    incidents = summary_json.get("incidents", []) or []
+
+    inc_state = {}
+    for inc in incidents:
+        inc_id = inc.get("id")
+        if not inc_id:
+            continue
+
+        status = inc.get("status", "unknown")          # investigating/identified/monitoring/resolved/...
+        impact = inc.get("impact", "unknown")          # none/minor/major/critical
+
+        # Helpful URLs (summary usually includes "shortlink")
+        inc_state[inc_id] = {
+            "name": inc.get("name", "Unnamed incident"),
+            "status": status,
+            "impact": impact,
+            "shortlink": inc.get("shortlink"),
+            "url": inc.get("url"),
+        }
+
+    return {"page_indicator": page_indicator, "incidents": inc_state}
+
+
+def diff_state(prev, curr):
+    prev_inc = (prev or {}).get("incidents", {}) or {}
+    curr_inc = (curr or {}).get("incidents", {}) or {}
+
+    new_or_changed = []
+    resolved = []
+
+    # New or changed incidents (unresolved only)
+    for inc_id, inc in curr_inc.items():
+        status = inc.get("status", "unknown")
+        impact = inc.get("impact", "unknown")
+
+        # Optional filter: only alert for meaningful impacts
+        if impact in {"none"}:
+            continue
+        if ALERT_IMPACTS and impact not in ALERT_IMPACTS:
+            continue
+
+        prev_entry = prev_inc.get(inc_id)
+        if status != "resolved":
+            if prev_entry is None:
+                new_or_changed.append(inc)
+            else:
+                # status change (or impact change)
+                if (prev_entry.get("status") != status) or (prev_entry.get("impact") != impact):
+                    new_or_changed.append(inc)
+
+    # Resolved incidents (previously unresolved, now resolved or disappeared)
+    for inc_id, prev_entry in prev_inc.items():
+        prev_status = prev_entry.get("status", "unknown")
+        if prev_status == "resolved":
+            continue
+
+        curr_entry = curr_inc.get(inc_id)
+        if curr_entry is None:
+            # Sometimes resolved incidents drop from summary; treat as resolved
+            resolved.append(prev_entry)
+        else:
+            if curr_entry.get("status") == "resolved":
+                resolved.append(curr_entry)
+
+    return new_or_changed, resolved
+
+
+# ---------------- Main ----------------
 def main():
     print(f"Starting check at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}...")
 
-    previous_state = load_previous_state()
-    current_state = {}
-
-    new_issues = []
-    new_maintenance = []
-    resolved = []
+    prev_state = load_previous_state()
 
     try:
-        response = requests.get(CLOUDFLARE_API_URL, timeout=20)
-        response.raise_for_status()
-        data = response.json()
-        components = data.get("components", [])
+        summary = fetch_summary()
+        curr_state = normalize_state(summary)
 
-        # Monitor ONLY global components
-        monitored = [c for c in components if c.get("name") in GLOBAL_COMPONENTS]
-        if not monitored:
-            print("⚠️ Warning: No components matched GLOBAL_COMPONENTS list.")
+        page_indicator = curr_state.get("page_indicator", "unknown")
+        new_or_changed, resolved = diff_state(prev_state, curr_state)
 
-        for comp in monitored:
-            name = comp["name"]
-            raw_status = comp["status"]
-            current_state[name] = raw_status
+        # Log a quick view
+        if new_or_changed:
+            for inc in new_or_changed:
+                print(f"🔴 Incident: {inc['name']} -> {inc.get('status')} (impact: {inc.get('impact')})")
+        if resolved:
+            for inc in resolved:
+                print(f"✅ Resolved: {inc['name']}")
 
-            last_status = previous_state.get(name, "operational")
-
-            # Only alert on CHANGES (prevents duplicate Slack messages every 5 min)
-            if raw_status != last_status:
-                if raw_status != "operational":
-                    print(f"🔴 CHANGE: {name} -> {raw_status}")
-                    item = {"name": name, "code": raw_status}
-
-                    if raw_status == "under_maintenance":
-                        new_maintenance.append(item)
-                    else:
-                        new_issues.append(item)
-
-                elif raw_status == "operational" and last_status != "operational":
-                    print(f"✅ RESOLVED: {name} (was {last_status})")
-                    resolved.append({"name": name})
-
-            else:
-                if raw_status != "operational":
-                    print(f"⚠️ Still {raw_status}: {name} (no alert)")
-
-        # Send ONE message if something changed
-        if new_issues or new_maintenance or resolved:
-            send_global_slack_alert(new_issues, new_maintenance, resolved)
+        if new_or_changed or resolved:
+            send_slack_alert(page_indicator, new_or_changed, resolved)
         else:
-            print("No global status changes detected.")
+            print("No incident changes detected (per summary endpoint).")
 
-        # Persist state so next run doesn't duplicate alerts
-        save_current_state(current_state)
+        save_current_state(curr_state)
         print("Done. State saved.")
 
     except Exception as e:
